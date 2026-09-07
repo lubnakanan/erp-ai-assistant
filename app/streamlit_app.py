@@ -21,7 +21,15 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rag"))
 from rag_flow import answer_question  # noqa: E402
 
+# Import monitoring / SQLite logging
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "monitoring"))
+from db import init_db, log_interaction  # noqa: E402
+
+
 MODULES = ["All modules", "Accounting", "Buying", "Selling", "Stock", "HR"]
+
+# Initialize the monitoring database
+init_db()
 
 st.set_page_config(
     page_title="ERP Assistant",
@@ -60,8 +68,16 @@ st.markdown(
         border: 1px solid #2A3B4D;
         border-bottom: none;
     }
-    .sap-titlebar .app-name { font-weight: 600; letter-spacing: 0.3px; }
-    .sap-titlebar .sys-info { font-size: 12px; color: #8FA6BD; }
+
+    .sap-titlebar .app-name {
+        font-weight: 600;
+        letter-spacing: 0.3px;
+    }
+
+    .sap-titlebar .sys-info {
+        font-size: 12px;
+        color: #8FA6BD;
+    }
 
     /* Sub-bar like the SAP GUI "transaction code" strip */
     .sap-subbar {
@@ -76,7 +92,9 @@ st.markdown(
     }
 
     /* Chat bubbles */
-    .stChatMessage { font-family: Arial, "Segoe UI", sans-serif; }
+    .stChatMessage {
+        font-family: Arial, "Segoe UI", sans-serif;
+    }
 
     div[data-testid="stChatMessageContent"] {
         border-radius: 6px;
@@ -92,7 +110,10 @@ st.markdown(
         border-radius: 3px;
         color: var(--sap-text);
     }
-    .sap-source a { color: #6CBBFF; }
+
+    .sap-source a {
+        color: #6CBBFF;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -104,6 +125,7 @@ st.markdown(
         <span class="app-name">🗂️ ERP Assistant</span>
         <span class="sys-info">System: EAA &nbsp;|&nbsp; Client: 100 &nbsp;|&nbsp; User: LUBNA</span>
     </div>
+
     <div class="sap-subbar">
         RAG-powered Q&amp;A over Accounting (FI/CO) · Buying &amp; Stock (MM) · Selling (SD) · HR &amp; Payroll (HCM)
     </div>
@@ -116,8 +138,14 @@ st.markdown(
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### ⚙️ Filters")
-    selected_module = st.selectbox("Restrict search to module", MODULES)
+
+    selected_module = st.selectbox(
+        "Restrict search to module",
+        MODULES,
+    )
+
     st.markdown("---")
+
     st.markdown(
         "**About**\n\n"
         "ERP Assistant answers questions about core ERP modules "
@@ -126,6 +154,7 @@ with st.sidebar:
         "over official ERPNext & Frappe HR documentation.\n\n"
         "Runs fully locally & free — Ollama (`llama3.2:1b`) + Chroma."
     )
+
     if st.button("🗑️ Clear conversation"):
         st.session_state.messages = []
         st.rerun()
@@ -139,6 +168,7 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
         if msg["role"] == "assistant" and msg.get("sources"):
             with st.expander("📎 Sources"):
                 for s in msg["sources"]:
@@ -147,20 +177,42 @@ for msg in st.session_state.messages:
                         f'<a href="{s["url"]}" target="_blank">{s["title"]}</a></div>',
                         unsafe_allow_html=True,
                     )
-            st.caption(f"⏱️ {msg.get('response_time_sec', '?')}s")
 
-question = st.chat_input("Ask about Accounting, Buying, Selling, Stock, or HR...")
+            st.caption(
+                f"⏱️ {msg.get('response_time_sec', '?')}s"
+            )
+
+question = st.chat_input(
+    "Ask about Accounting, Buying, Selling, Stock, or HR..."
+)
 
 if question:
-    st.session_state.messages.append({"role": "user", "content": question})
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": question,
+        }
+    )
+
     with st.chat_message("user"):
         st.markdown(question)
 
     with st.chat_message("assistant"):
         with st.spinner("Looking through ERP documentation..."):
-            module_filter = None if selected_module == "All modules" else selected_module
-            result = answer_question(question, module=module_filter)
+
+            module_filter = (
+                None
+                if selected_module == "All modules"
+                else selected_module
+            )
+
+            result = answer_question(
+                question,
+                module=module_filter,
+            )
+
         st.markdown(result["answer"])
+
         with st.expander("📎 Sources"):
             for s in result["sources"]:
                 st.markdown(
@@ -168,7 +220,21 @@ if question:
                     f'<a href="{s["url"]}" target="_blank">{s["title"]}</a></div>',
                     unsafe_allow_html=True,
                 )
-        st.caption(f"⏱️ {result['response_time_sec']}s")
+
+        st.caption(
+            f"⏱️ {result['response_time_sec']}s"
+        )
+
+    # -----------------------------------------------------------------------
+    # Step 7 — Log interaction to SQLite
+    # -----------------------------------------------------------------------
+    log_id = log_interaction(
+        question=question,
+        answer=result["answer"],
+        module_filter=module_filter,
+        response_time_sec=result["response_time_sec"],
+        num_sources=len(result["sources"]),
+    )
 
     st.session_state.messages.append(
         {
@@ -176,5 +242,6 @@ if question:
             "content": result["answer"],
             "sources": result["sources"],
             "response_time_sec": result["response_time_sec"],
+            "log_id": log_id,
         }
     )
