@@ -3,3 +3,4 @@ tqdm
 chromadb
 minsearch
 ollama
+streamlit
