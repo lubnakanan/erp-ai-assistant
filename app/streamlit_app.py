@@ -23,7 +23,7 @@ from rag_flow import answer_question  # noqa: E402
 
 # Import monitoring / SQLite logging
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "monitoring"))
-from db import init_db, log_interaction  # noqa: E402
+from db import init_db, log_interaction, update_feedback  # noqa: E402
 
 
 MODULES = ["All modules", "Accounting", "Buying", "Selling", "Stock", "HR"]
@@ -51,9 +51,10 @@ st.markdown(
         --sap-text: #F5F6F7;
     }
 
-    .stApp { background-color: var(--sap-grey); }
+    .stApp {
+        background-color: var(--sap-grey);
+    }
 
-    /* Top title bar, styled like an SAP GUI window header */
     .sap-titlebar {
         background-color: var(--sap-blue-dark);
         color: white;
@@ -79,7 +80,6 @@ st.markdown(
         color: #8FA6BD;
     }
 
-    /* Sub-bar like the SAP GUI "transaction code" strip */
     .sap-subbar {
         background-color: var(--sap-blue);
         color: #05121F;
@@ -91,7 +91,6 @@ st.markdown(
         margin-bottom: 18px;
     }
 
-    /* Chat bubbles */
     .stChatMessage {
         font-family: Arial, "Segoe UI", sans-serif;
     }
@@ -100,7 +99,6 @@ st.markdown(
         border-radius: 6px;
     }
 
-    /* Source citation box */
     .sap-source {
         background-color: var(--sap-blue-light);
         border-left: 3px solid var(--sap-blue);
@@ -113,6 +111,13 @@ st.markdown(
 
     .sap-source a {
         color: #6CBBFF;
+    }
+
+    .feedback-label {
+        font-size: 12px;
+        color: #8FA6BD;
+        margin-top: 8px;
+        margin-bottom: 2px;
     }
     </style>
     """,
@@ -165,28 +170,82 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+
+# ---------------------------------------------------------------------------
+# Feedback helper
+# ---------------------------------------------------------------------------
+def show_feedback(msg):
+    """Display and save thumbs-up / thumbs-down feedback."""
+
+    log_id = msg.get("log_id")
+
+    if not log_id:
+        return
+
+    current_feedback = msg.get("feedback")
+
+    if current_feedback == "up":
+        st.caption("👍 Thanks for your feedback!")
+        return
+
+    if current_feedback == "down":
+        st.caption("👎 Thanks for your feedback!")
+        return
+
+    st.markdown(
+        '<div class="feedback-label">Was this answer helpful?</div>',
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, _ = st.columns([1, 1, 8])
+
+    with col1:
+        if st.button("👍", key=f"feedback_up_{log_id}"):
+            update_feedback(log_id, "up")
+            msg["feedback"] = "up"
+            st.rerun()
+
+    with col2:
+        if st.button("👎", key=f"feedback_down_{log_id}"):
+            update_feedback(log_id, "down")
+            msg["feedback"] = "down"
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Display previous conversation
+# ---------------------------------------------------------------------------
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-        if msg["role"] == "assistant" and msg.get("sources"):
-            with st.expander("📎 Sources"):
-                for s in msg["sources"]:
-                    st.markdown(
-                        f'<div class="sap-source">[{s["module"]}] '
-                        f'<a href="{s["url"]}" target="_blank">{s["title"]}</a></div>',
-                        unsafe_allow_html=True,
-                    )
+        if msg["role"] == "assistant":
+
+            if msg.get("sources"):
+                with st.expander("📎 Sources"):
+                    for s in msg["sources"]:
+                        st.markdown(
+                            f'<div class="sap-source">[{s["module"]}] '
+                            f'<a href="{s["url"]}" target="_blank">{s["title"]}</a></div>',
+                            unsafe_allow_html=True,
+                        )
 
             st.caption(
                 f"⏱️ {msg.get('response_time_sec', '?')}s"
             )
 
+            show_feedback(msg)
+
+
+# ---------------------------------------------------------------------------
+# New question
+# ---------------------------------------------------------------------------
 question = st.chat_input(
     "Ask about Accounting, Buying, Selling, Stock, or HR..."
 )
 
 if question:
+
     st.session_state.messages.append(
         {
             "role": "user",
@@ -198,6 +257,7 @@ if question:
         st.markdown(question)
 
     with st.chat_message("assistant"):
+
         with st.spinner("Looking through ERP documentation..."):
 
             module_filter = (
@@ -213,35 +273,43 @@ if question:
 
         st.markdown(result["answer"])
 
-        with st.expander("📎 Sources"):
-            for s in result["sources"]:
-                st.markdown(
-                    f'<div class="sap-source">[{s["module"]}] '
-                    f'<a href="{s["url"]}" target="_blank">{s["title"]}</a></div>',
-                    unsafe_allow_html=True,
-                )
+        if result["sources"]:
+            with st.expander("📎 Sources"):
+                for s in result["sources"]:
+                    st.markdown(
+                        f'<div class="sap-source">[{s["module"]}] '
+                        f'<a href="{s["url"]}" target="_blank">{s["title"]}</a></div>',
+                        unsafe_allow_html=True,
+                    )
 
         st.caption(
             f"⏱️ {result['response_time_sec']}s"
         )
 
-    # -----------------------------------------------------------------------
-    # Step 7 — Log interaction to SQLite
-    # -----------------------------------------------------------------------
-    log_id = log_interaction(
-        question=question,
-        answer=result["answer"],
-        module_filter=module_filter,
-        response_time_sec=result["response_time_sec"],
-        num_sources=len(result["sources"]),
-    )
+        # ---------------------------------------------------------------
+        # Log interaction
+        # ---------------------------------------------------------------
+        log_id = log_interaction(
+            question=question,
+            answer=result["answer"],
+            module_filter=module_filter,
+            response_time_sec=result["response_time_sec"],
+            num_sources=len(result["sources"]),
+        )
 
-    st.session_state.messages.append(
-        {
+        # Create the message object before displaying feedback
+        assistant_message = {
             "role": "assistant",
             "content": result["answer"],
             "sources": result["sources"],
             "response_time_sec": result["response_time_sec"],
             "log_id": log_id,
+            "feedback": None,
         }
-    )
+
+        st.session_state.messages.append(assistant_message)
+
+        # ---------------------------------------------------------------
+        # Feedback for the newly generated answer
+        # ---------------------------------------------------------------
+        show_feedback(assistant_message)
